@@ -1,135 +1,202 @@
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
-    <meta charset="UTF-8">
-    <title>Scanner de Device IDs</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
-    <style>
-        body { font-family: sans-serif; text-align: center; }
-        #scanner { width: 100%; max-width: 400px; margin: auto; }
-        #lista { margin-top: 20px; font-size: 18px; text-align: left; }
-        #acoes { margin-top: 20px; }
-        button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; }
-        .item-lista { padding: 5px; border-bottom: 1px solid #eee; }
-    </style>
+  <meta charset="UTF-8">
+  <title>Scanner de Código de Barras</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      text-align: center;
+      background-color: #f0f2f5;
+      color: #333;
+      padding: 20px;
+    }
+    h1 {
+      color: #007bff;
+    }
+    #scanner-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: auto;
+      max-width: 400px;
+      padding: 20px;
+      border-radius: 8px;
+      background-color: #fff;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    #scanner {
+      width: 100%;
+      height: 250px;
+      border: 2px solid #ddd;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+    #lista {
+      margin-top: 20px;
+      font-size: 18px;
+      text-align: left;
+      width: 100%;
+      padding: 10px;
+      background-color: #e9ecef;
+      border-radius: 6px;
+      min-height: 50px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .code-item {
+      padding: 8px 0;
+      border-bottom: 1px solid #ccc;
+      color: #555;
+    }
+    .code-item:last-child {
+      border-bottom: none;
+    }
+    .buttons {
+      margin-top: 20px;
+      width: 100%;
+      display: flex;
+      justify-content: space-around;
+    }
+    .btn {
+      padding: 10px 15px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: bold;
+      transition: background-color 0.3s;
+    }
+    .btn-copy {
+      background-color: #28a745;
+      color: white;
+    }
+    .btn-copy:hover {
+      background-color: #218838;
+    }
+    .btn-clear {
+      background-color: #dc3545;
+      color: white;
+    }
+    .btn-clear:hover {
+      background-color: #c82333;
+    }
+  </style>
 </head>
 <body>
-    <h1>Scanner de Device IDs</h1>
+
+  <div id="scanner-container">
     <div id="scanner"></div>
-    <div id="acoes">
-        <button id="copiarBtn">Copiar Device IDs</button>
-        <button id="apagarBtn">Apagar Tudo</button>
+    <div class="buttons">
+      <button id="copy-btn" class="btn btn-copy">Copiar Todos</button>
+      <button id="clear-btn" class="btn btn-clear">Limpar Tudo</button>
     </div>
-    <div id="lista"></div>
+  </div>
 
-    <script>
-        // --- Firebase ---
-        const firebaseConfig = {
-            apiKey: "AIzaSyC2eUz5iTUURydrdi4So1uPmQs9esGFe_E",
-            authDomain: "pitzi-cel-barcode.firebaseapp.com",
-            projectId: "pitzi-cel-barcode",
-            storageBucket: "pitzi-cel-barcode.firebasestorage.app",
-            messagingSenderId: "196032039906",
-            appId: "1:196032039906:web:1bc78ed983bbb7b07387bb"
-        };
-        firebase.initializeApp(firebaseConfig);
-        const db = firebase.firestore();
+  <div id="lista"></div>
 
-        // Variável de controle para o delay
-        const DELAY_ENTRE_LEITURAS = 500; // 500 milissegundos
-        let ultimoCodigoDetectado = '';
-        let ultimoTimestampDetectado = 0;
+  <script>
+    // --- Firebase ---
+    const firebaseConfig = {
+      apiKey: "AIzaSyC2eUz5iTUURydrdi4So1uPmQs9esGFe_E",
+      authDomain: "pitzi-cel-barcode.firebaseapp.com",
+      projectId: "pitzi-cel-barcode",
+      storageBucket: "pitzi-cel-barcode.firebasestorage.app",
+      messagingSenderId: "196032039906",
+      appId: "1:196032039906:web:1bc78ed983bbb7b07387bb"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
 
-        // --- Função para adicionar código na tela ---
-        function adicionarCodigo(codigo) {
-            const div = document.getElementById("lista");
+    // Armazena os códigos escaneados para evitar duplicatas
+    const scannedCodes = new Set();
+
+    // Referência aos elementos HTML
+    const listaDiv = document.getElementById("lista");
+    const copyBtn = document.getElementById("copy-btn");
+    const clearBtn = document.getElementById("clear-btn");
+
+    // --- Escuta em tempo real no Firestore ---
+    db.collection("codigos").orderBy("timestamp", "desc")
+      .onSnapshot(snapshot => {
+        // Limpa e repopula a lista na tela com os dados do Firestore
+        listaDiv.innerHTML = "";
+        scannedCodes.clear(); // Limpa o Set para sincronizar com o Firestore
+        snapshot.forEach(doc => {
+          const codigo = doc.data().codigo;
+          // Adiciona o código localmente, mas sem duplicar
+          if (!scannedCodes.has(codigo)) {
+            scannedCodes.add(codigo);
             const item = document.createElement("div");
-            item.className = "item-lista";
             item.textContent = "📦 " + codigo;
-            div.prepend(item);
-        }
-
-        // --- Escuta em tempo real no Firestore ---
-        db.collection("deviceids").orderBy("timestamp", "desc")
-            .onSnapshot(snapshot => {
-                document.getElementById("lista").innerHTML = "";
-                snapshot.forEach(doc => {
-                    adicionarCodigo(doc.data().codigo);
-                });
-            });
-
-        // --- Inicia câmera ---
-        if (navigator.mediaDevices) {
-            Quagga.init({
-                inputStream: {
-                    type: "LiveStream",
-                    constraints: { facingMode: "environment" },
-                    target: document.querySelector('#scanner')
-                },
-                decoder: { readers: ["code_128_reader","ean_reader","ean_8_reader","code_39_reader"] }
-            }, function(err) {
-                if (!err) {
-                    Quagga.start();
-                } else {
-                    console.error("Erro ao iniciar o Quagga: ", err);
-                    alert("Erro ao iniciar o scanner. Verifique se a permissão da câmera foi concedida.");
-                }
-            });
-
-            Quagga.onDetected((data) => {
-                const codigo = data.codeResult.code;
-                const agora = Date.now();
-
-                // Checa se o código tem 7 dígitos e se não foi lido recentemente
-                if (codigo.length === 7 && codigo !== ultimoCodigoDetectado) {
-                    // Atualiza o tempo e o código lido
-                    ultimoCodigoDetectado = codigo;
-                    ultimoTimestampDetectado = agora;
-
-                    // Salva no Firestore
-                    db.collection("deviceids").add({
-                        codigo: codigo,
-                        timestamp: firebase.firestore.FieldValue.serverTimestamp()
-                    });
-                }
-            });
-        }
-
-        // --- Botões de Ação ---
-        document.getElementById("copiarBtn").addEventListener("click", () => {
-            db.collection("deviceids").get().then(snapshot => {
-                const deviceIds = [];
-                snapshot.forEach(doc => {
-                    deviceIds.push(doc.data().codigo);
-                });
-                const textoParaCopiar = deviceIds.join("\n");
-                navigator.clipboard.writeText(textoParaCopiar).then(() => {
-                    alert("Device IDs copiados para a área de transferência!");
-                }).catch(err => {
-                    console.error("Erro ao copiar: ", err);
-                    alert("Erro ao copiar os Device IDs.");
-                });
-            });
+            item.classList.add("code-item");
+            listaDiv.prepend(item);
+          }
         });
+      });
 
-        document.getElementById("apagarBtn").addEventListener("click", () => {
-            if (confirm("Tem certeza que deseja apagar todos os dados?")) {
-                db.collection("deviceids").get().then(snapshot => {
-                    const batch = db.batch();
-                    snapshot.docs.forEach(doc => {
-                        batch.delete(doc.ref);
-                    });
-                    return batch.commit();
-                }).then(() => {
-                    alert("Todos os dados foram apagados com sucesso.");
-                }).catch(err => {
-                    console.error("Erro ao apagar: ", err);
-                    alert("Erro ao apagar os dados.");
-                });
-            }
+    // --- Inicia a câmera ---
+    if (navigator.mediaDevices && typeof Quagga !== 'undefined') {
+      Quagga.init({
+        inputStream: {
+          type: "LiveStream",
+          constraints: { facingMode: "environment" },
+          target: document.querySelector('#scanner')
+        },
+        decoder: {
+          readers: ["code_128_reader", "ean_reader", "ean_8_reader", "code_39_reader"]
+        }
+      }, function(err) {
+        if (!err) {
+          Quagga.start();
+        } else {
+          console.error("Erro ao iniciar Quagga:", err);
+          alert("Não foi possível iniciar a câmera. Verifique as permissões.");
+        }
+      });
+
+      Quagga.onDetected((data) => {
+        const codigo = data.codeResult.code;
+        // Filtra para aceitar apenas códigos com 7 dígitos e que não foram escaneados
+        if (codigo.length === 7 && !scannedCodes.has(codigo)) {
+          // Adiciona o código ao Firestore, que irá disparar o onSnapshot e atualizar a lista
+          db.collection("codigos").add({
+            codigo: codigo,
+            timestamp: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        }
+      });
+    } else {
+      listaDiv.textContent = "Seu navegador não suporta este recurso ou a biblioteca Quagga não foi carregada.";
+    }
+
+    // --- Funcionalidade dos botões ---
+    copyBtn.addEventListener('click', () => {
+      if (scannedCodes.size === 0) {
+        alert("Nenhum código escaneado para copiar.");
+        return;
+      }
+      const codesToCopy = Array.from(scannedCodes).join('\n');
+      navigator.clipboard.writeText(codesToCopy)
+        .then(() => alert("Todos os códigos foram copiados para a área de transferência!"))
+        .catch(err => console.error("Erro ao copiar: ", err));
+    });
+
+    clearBtn.addEventListener('click', () => {
+      // Limpa os dados do Firebase e localmente
+      if (confirm("Tem certeza que deseja limpar todos os códigos? Esta ação é irreversível e afetará todos os usuários.")) {
+        db.collection("codigos").get().then(querySnapshot => {
+          querySnapshot.forEach(doc => {
+            doc.ref.delete();
+          });
+          alert("Lista de códigos limpa.");
         });
-    </script>
+      }
+    });
+  </script>
 </body>
 </html>
