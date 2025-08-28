@@ -2,23 +2,32 @@
 <html lang="pt-br">
 <head>
   <meta charset="UTF-8">
-  <title>Scanner em tempo real</title>
+  <title>Scanner de Etiquetas</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
   <style>
     body { font-family: sans-serif; text-align: center; }
     #scanner { width: 100%; max-width: 400px; margin: auto; }
-    #lista { margin-top: 20px; font-size: 18px; text-align: left; }
+    .etiqueta { 
+      border: 1px solid #aaa; 
+      border-radius: 8px; 
+      padding: 10px; 
+      margin: 10px 0; 
+      text-align: left; 
+    }
+    .campo { margin: 5px 0; }
+    #lista { margin-top: 20px; }
+    button { margin: 15px; padding: 10px 15px; border-radius: 6px; cursor: pointer; }
   </style>
 </head>
 <body>
-  <h1>Scanner em tempo real</h1>
   <div id="scanner"></div>
+  <button onclick="copiarDeviceIDs()">📋 Copiar DeviceIDs</button>
   <div id="lista"></div>
 
   <script>
-    // --- Firebase ---
+    // --- Configuração Firebase (substituir pelos teus dados) ---
   const firebaseConfig = {
     apiKey: "AIzaSyC2eUz5iTUURydrdi4So1uPmQs9esGFe_E",
     authDomain: "pitzi-cel-barcode.firebaseapp.com",
@@ -30,24 +39,67 @@
     firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
 
-    // --- Função para adicionar código na tela ---
-    function adicionarCodigo(codigo) {
-      const div = document.getElementById("lista");
-      const item = document.createElement("div");
-      item.textContent = "📦 " + codigo;
-      div.prepend(item);
+    let buffer = {};        // Guarda leituras da etiqueta atual
+    let bloqueado = false;  // Evita múltiplas leituras muito rápidas
+
+    // --- Função para criar div da etiqueta ---
+    function criarEtiqueta(dados) {
+      const div = document.createElement("div");
+      div.className = "etiqueta";
+      div.innerHTML = `
+        <div class="campo"><b>IMEI:</b> ${dados.imei || "-"}</div>
+        <div class="campo"><b>DeviceID:</b> ${dados.deviceid || "-"}</div>
+        <div class="campo"><b>ProductID:</b> ${dados.productid || "-"}</div>
+        <div class="campo"><b>SRID:</b> ${dados.srid || "-"}</div>
+      `;
+      document.getElementById("lista").prepend(div);
     }
 
-    // --- Escuta em tempo real no Firestore ---
+    // --- Detecta tipo de código pelo tamanho ---
+    function classificarCodigo(code) {
+      if (/^\d{15}$/.test(code)) return "imei";
+      if (/^\d{7}$/.test(code))  return "deviceid";
+      if (/^\d{4}$/.test(code))  return "productid";
+      if (/^\d{5}$/.test(code))  return "srid";
+      return null;
+    }
+
+    // --- Processa código lido ---
+    function processarCodigo(code) {
+      const tipo = classificarCodigo(code);
+      if (!tipo) return;
+
+      buffer[tipo] = code;
+      console.log("Leu:", tipo, code);
+
+      // Se já leu todos os 4 → cria a etiqueta
+      if (buffer.imei && buffer.deviceid && buffer.productid && buffer.srid) {
+        const dados = { ...buffer, timestamp: firebase.firestore.FieldValue.serverTimestamp() };
+
+        // Salva no Firestore
+        db.collection("codigos").add(dados)
+          .then(() => console.log("Etiqueta salva:", dados))
+          .catch(err => console.error("Erro Firestore:", err));
+
+        // Mostra no navegador
+        criarEtiqueta(buffer);
+
+        buffer = {}; // limpa para próxima
+        bloqueado = true;
+        setTimeout(() => bloqueado = false, 1000); // 1s de delay
+      }
+    }
+
+    // --- Escuta Firestore em tempo real ---
     db.collection("codigos").orderBy("timestamp", "desc")
       .onSnapshot(snapshot => {
         document.getElementById("lista").innerHTML = "";
         snapshot.forEach(doc => {
-          adicionarCodigo(doc.data().codigo);
+          criarEtiqueta(doc.data());
         });
       });
 
-    // --- Inicia câmera no celular ---
+    // --- Inicia Quagga (scanner) ---
     if (navigator.mediaDevices) {
       Quagga.init({
         inputStream: {
@@ -61,12 +113,21 @@
       });
 
       Quagga.onDetected((data) => {
-        const codigo = data.codeResult.code;
-        db.collection("codigos").add({
-          codigo: codigo,
-          timestamp: firebase.firestore.FieldValue.serverTimestamp()
-        });
+        if (bloqueado) return;
+        processarCodigo(data.codeResult.code);
       });
+    }
+
+    // --- Copiar só os DeviceID ---
+    function copiarDeviceIDs() {
+      const divs = document.querySelectorAll(".etiqueta .campo:nth-child(2)");
+      let ids = [];
+      divs.forEach(d => {
+        ids.push(d.innerText.replace("DeviceID:", "").trim());
+      });
+      navigator.clipboard.writeText(ids.join("\n"))
+        .then(() => alert("DeviceIDs copiados!"))
+        .catch(err => alert("Erro ao copiar: " + err));
     }
   </script>
 </body>
