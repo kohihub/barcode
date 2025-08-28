@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <title>Scanner Simples</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+  <style>
+    body { font-family: sans-serif; text-align: center; }
+    #scanner { width: 100%; max-width: 400px; margin: auto; }
+    #lista { margin-top: 20px; font-size: 18px; text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>Scanner HTML</h1>
+  <div id="scanner"></div>
+  <div id="lista"></div>
+
+  <script>
+    const bc = new BroadcastChannel("codigos");
+
+    // Se estiver no PC, apenas mostra os recebidos
+    bc.onmessage = (event) => {
+      adicionarCodigo(event.data);
+    };
+
+    // Se estiver no celular, inicia câmera
+    if (navigator.mediaDevices) {
+      Quagga.init({
+        inputStream: {
+          type: "LiveStream",
+          constraints: { facingMode: "environment" },
+          target: document.querySelector('#scanner')
+        },
+        decoder: { readers: ["code_128_reader", "ean_reader", "ean_8_reader"] }
+      }, function (err) {
+        if (!err) Quagga.start();
+      });
+
+      Quagga.onDetected((data) => {
+        const codigo = data.codeResult.code;
+        bc.postMessage(codigo); // envia p/ todas as abas conectadas
+        adicionarCodigo(codigo);
+      });
+    }
+
+    function adicionarCodigo(codigo) {
+      const div = document.getElementById("lista");
+      const item = document.createElement("div");
+      item.textContent = "📦 " + codigo;
+      div.prepend(item);
+    }
+  </script>
+</body>
+</html>
