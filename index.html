@@ -2,8 +2,10 @@
 <html lang="pt-br">
 <head>
   <meta charset="UTF-8">
-  <title>Scanner Simples</title>
+  <title>Scanner em tempo real</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
   <style>
     body { font-family: sans-serif; text-align: center; }
     #scanner { width: 100%; max-width: 400px; margin: auto; }
@@ -11,19 +13,41 @@
   </style>
 </head>
 <body>
-  <h1>Scanner HTML</h1>
+  <h1>Scanner em tempo real</h1>
   <div id="scanner"></div>
   <div id="lista"></div>
 
   <script>
-    const bc = new BroadcastChannel("codigos");
+    // --- Firebase ---
+  const firebaseConfig = {
+    apiKey: "AIzaSyC2eUz5iTUURydrdi4So1uPmQs9esGFe_E",
+    authDomain: "pitzi-cel-barcode.firebaseapp.com",
+    projectId: "pitzi-cel-barcode",
+    storageBucket: "pitzi-cel-barcode.firebasestorage.app",
+    messagingSenderId: "196032039906",
+    appId: "1:196032039906:web:1bc78ed983bbb7b07387bb"
+  };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
 
-    // Se estiver no PC, apenas mostra os recebidos
-    bc.onmessage = (event) => {
-      adicionarCodigo(event.data);
-    };
+    // --- Função para adicionar código na tela ---
+    function adicionarCodigo(codigo) {
+      const div = document.getElementById("lista");
+      const item = document.createElement("div");
+      item.textContent = "📦 " + codigo;
+      div.prepend(item);
+    }
 
-    // Se estiver no celular, inicia câmera
+    // --- Escuta em tempo real no Firestore ---
+    db.collection("codigos").orderBy("timestamp", "desc")
+      .onSnapshot(snapshot => {
+        document.getElementById("lista").innerHTML = "";
+        snapshot.forEach(doc => {
+          adicionarCodigo(doc.data().codigo);
+        });
+      });
+
+    // --- Inicia câmera no celular ---
     if (navigator.mediaDevices) {
       Quagga.init({
         inputStream: {
@@ -31,23 +55,18 @@
           constraints: { facingMode: "environment" },
           target: document.querySelector('#scanner')
         },
-        decoder: { readers: ["code_128_reader", "ean_reader", "ean_8_reader"] }
-      }, function (err) {
+        decoder: { readers: ["code_128_reader","ean_reader","ean_8_reader","code_39_reader"] }
+      }, function(err) {
         if (!err) Quagga.start();
       });
 
       Quagga.onDetected((data) => {
         const codigo = data.codeResult.code;
-        bc.postMessage(codigo); // envia p/ todas as abas conectadas
-        adicionarCodigo(codigo);
+        db.collection("codigos").add({
+          codigo: codigo,
+          timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        });
       });
-    }
-
-    function adicionarCodigo(codigo) {
-      const div = document.getElementById("lista");
-      const item = document.createElement("div");
-      item.textContent = "📦 " + codigo;
-      div.prepend(item);
     }
   </script>
 </body>
