@@ -1,73 +1,171 @@
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
-  <meta charset="UTF-8">
-  <title>Scanner em tempo real</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
-  <style>
-    body { font-family: sans-serif; text-align: center; }
-    #scanner { width: 100%; max-width: 400px; margin: auto; }
-    #lista { margin-top: 20px; font-size: 18px; text-align: left; }
-  </style>
+    <meta charset="UTF-8">
+    <title>Scanner de Etiquetas de Dispositivos</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; }
+        #scanner { width: 100%; max-width: 400px; margin: auto; }
+        #lista-dispositivos { margin-top: 20px; font-size: 16px; text-align: left; }
+        .dispositivo { border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; border-radius: 5px; }
+        .dispositivo p { margin: 5px 0; }
+        .dispositivo .label { font-weight: bold; }
+        #acoes { margin-top: 20px; }
+        button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; }
+    </style>
 </head>
 <body>
-  <h1>Scanner em tempo real</h1>
-  <div id="scanner"></div>
-  <div id="lista"></div>
+    <div id="scanner"></div>
+    <div id="acoes">
+        <button id="copiarBtn">Copiar Device IDs</button>
+        <button id="apagarBtn">Apagar Tudo</button>
+    </div>
+    <div id="lista-dispositivos"></div>
 
-  <script>
-    // --- Firebase ---
-  const firebaseConfig = {
-    apiKey: "AIzaSyC2eUz5iTUURydrdi4So1uPmQs9esGFe_E",
-    authDomain: "pitzi-cel-barcode.firebaseapp.com",
-    projectId: "pitzi-cel-barcode",
-    storageBucket: "pitzi-cel-barcode.firebasestorage.app",
-    messagingSenderId: "196032039906",
-    appId: "1:196032039906:web:1bc78ed983bbb7b07387bb"
-  };
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.firestore();
+    <script>
+        // --- Firebase ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyC2eUz5iTUURydrdi4So1uPmQs9esGFe_E",
+            authDomain: "pitzi-cel-barcode.firebaseapp.com",
+            projectId: "pitzi-cel-barcode",
+            storageBucket: "pitzi-cel-barcode.firebasestorage.app",
+            messagingSenderId: "196032039906",
+            appId: "1:196032039906:web:1bc78ed983bbb7b07387bb"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
 
-    // --- Função para adicionar código na tela ---
-    function adicionarCodigo(codigo) {
-      const div = document.getElementById("lista");
-      const item = document.createElement("div");
-      item.textContent = "📦 " + codigo;
-      div.prepend(item);
-    }
+        // --- Variáveis de estado ---
+        let dispositivoEmLeitura = {};
+        const DELAY_ENTRE_LEITURAS = 500; // Milissegundos de delay para evitar leituras duplicadas
+        let ultimoCodigoDetectado = '';
+        let ultimoTimestampDetectado = 0;
+        let lendoNovoDispositivo = false;
 
-    // --- Escuta em tempo real no Firestore ---
-    db.collection("codigos").orderBy("timestamp", "desc")
-      .onSnapshot(snapshot => {
-        document.getElementById("lista").innerHTML = "";
-        snapshot.forEach(doc => {
-          adicionarCodigo(doc.data().codigo);
+        // --- Funções Auxiliares ---
+
+        function isImei(codigo) { return codigo.length === 15; }
+        function isDeviceId(codigo) { return codigo.length === 7; }
+        function isProductId(codigo) { return codigo.length === 4; }
+        function isSrid(codigo) { return codigo.length === 5; }
+
+        function adicionarDispositivoNaTela(dispositivo) {
+            const listaDiv = document.getElementById("lista-dispositivos");
+            const divDispositivo = document.createElement("div");
+            divDispositivo.className = "dispositivo";
+            divDispositivo.innerHTML = `
+                <p><span class="label">IMEI:</span> ${dispositivo.imei}</p>
+                <p><span class="label">Device ID:</span> ${dispositivo.deviceid}</p>
+                <p><span class="label">Product ID:</span> ${dispositivo.productid}</p>
+                <p><span class="label">SR ID:</span> ${dispositivo.srid}</p>
+            `;
+            listaDiv.prepend(divDispositivo);
+        }
+
+        // --- Escuta em tempo real no Firestore ---
+        db.collection("dispositivos").orderBy("timestamp", "desc")
+            .onSnapshot(snapshot => {
+                const listaDiv = document.getElementById("lista-dispositivos");
+                listaDiv.innerHTML = ""; // Limpa a lista para redesenhar
+                snapshot.forEach(doc => {
+                    adicionarDispositivoNaTela(doc.data());
+                });
+            });
+
+        // --- Inicia a câmera ---
+        if (navigator.mediaDevices) {
+            Quagga.init({
+                inputStream: {
+                    type: "LiveStream",
+                    constraints: { facingMode: "environment" },
+                    target: document.querySelector('#scanner')
+                },
+                decoder: { readers: ["code_128_reader","ean_reader","ean_8_reader","code_39_reader"] }
+            }, function(err) {
+                if (!err) Quagga.start();
+            });
+
+            Quagga.onDetected((data) => {
+                const codigo = data.codeResult.code;
+                const agora = Date.now();
+
+                // Ignora leituras duplicadas dentro do delay
+                if (codigo === ultimoCodigoDetectado && (agora - ultimoTimestampDetectado) < DELAY_ENTRE_LEITURAS) {
+                    return;
+                }
+
+                // Reseta a leitura se o código for diferente
+                if (codigo !== ultimoCodigoDetectado) {
+                    ultimoCodigoDetectado = codigo;
+                }
+                ultimoTimestampDetectado = agora;
+
+                if (isImei(codigo)) {
+                    // Inicia a leitura de um novo dispositivo
+                    lendoNovoDispositivo = true;
+                    dispositivoEmLeitura = {
+                        imei: codigo
+                    };
+                } else if (lendoNovoDispositivo) {
+                    if (isDeviceId(codigo) && !dispositivoEmLeitura.deviceid) {
+                        dispositivoEmLeitura.deviceid = codigo;
+                    } else if (isProductId(codigo) && !dispositivoEmLeitura.productid) {
+                        dispositivoEmLeitura.productid = codigo;
+                    } else if (isSrid(codigo) && !dispositivoEmLeitura.srid) {
+                        dispositivoEmLeitura.srid = codigo;
+                    }
+                }
+
+                // Checa se todos os 4 códigos foram lidos para salvar
+                if (dispositivoEmLeitura.imei && dispositivoEmLeitura.deviceid && dispositivoEmLeitura.productid && dispositivoEmLeitura.srid) {
+                    db.collection("dispositivos").add({
+                        ...dispositivoEmLeitura,
+                        timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    
+                    // Reseta o estado para começar a ler o próximo dispositivo
+                    dispositivoEmLeitura = {};
+                    lendoNovoDispositivo = false;
+                }
+            });
+        }
+
+        // --- Botões de Ação ---
+        document.getElementById("copiarBtn").addEventListener("click", () => {
+            db.collection("dispositivos").get().then(snapshot => {
+                const deviceIds = [];
+                snapshot.forEach(doc => {
+                    deviceIds.push(doc.data().deviceid);
+                });
+                const textoParaCopiar = deviceIds.join("\n");
+                navigator.clipboard.writeText(textoParaCopiar).then(() => {
+                    alert("Device IDs copiados para a área de transferência!");
+                }).catch(err => {
+                    console.error("Erro ao copiar: ", err);
+                    alert("Erro ao copiar os Device IDs.");
+                });
+            });
         });
-      });
 
-    // --- Inicia câmera no celular ---
-    if (navigator.mediaDevices) {
-      Quagga.init({
-        inputStream: {
-          type: "LiveStream",
-          constraints: { facingMode: "environment" },
-          target: document.querySelector('#scanner')
-        },
-        decoder: { readers: ["code_128_reader","ean_reader","ean_8_reader","code_39_reader"] }
-      }, function(err) {
-        if (!err) Quagga.start();
-      });
-
-      Quagga.onDetected((data) => {
-        const codigo = data.codeResult.code;
-        db.collection("codigos").add({
-          codigo: codigo,
-          timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        document.getElementById("apagarBtn").addEventListener("click", () => {
+            if (confirm("Tem certeza que deseja apagar todos os dados?")) {
+                db.collection("dispositivos").get().then(snapshot => {
+                    const batch = db.batch();
+                    snapshot.docs.forEach(doc => {
+                        batch.delete(doc.ref);
+                    });
+                    return batch.commit();
+                }).then(() => {
+                    alert("Todos os dados foram apagados com sucesso.");
+                }).catch(err => {
+                    console.error("Erro ao apagar: ", err);
+                    alert("Erro ao apagar os dados.");
+                });
+            }
         });
-      });
-    }
-  </script>
+    </script>
 </body>
 </html>
