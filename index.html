@@ -17,6 +17,27 @@
     h1 {
       color: #007bff;
     }
+    #collection-setup {
+      margin-bottom: 20px;
+      padding: 20px;
+      background-color: #e9ecef;
+      border-radius: 8px;
+    }
+    #collection-input {
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      width: 60%;
+      margin-right: 10px;
+    }
+    #start-btn {
+      padding: 8px 15px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
     #scanner-container {
       display: flex;
       flex-direction: column;
@@ -27,6 +48,7 @@
       border-radius: 8px;
       background-color: #fff;
       box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+      display: none; /* Inicia escondido */
     }
     #scanner {
       width: 100%;
@@ -89,6 +111,12 @@
 </head>
 <body>
 
+  <div id="collection-setup">
+    <label for="collection-input">Nome da Coleção:</label>
+    <input type="text" id="collection-input" placeholder="Ex: estoque-celulares">
+    <button id="start-btn">Iniciar Scanner</button>
+  </div>
+
   <div id="scanner-container">
     <div id="scanner"></div>
     <div class="buttons">
@@ -112,69 +140,96 @@
     firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
 
-    // Armazena os códigos escaneados para evitar duplicatas
-    const scannedCodes = new Set();
-
-    // Referência aos elementos HTML
+    const scannerContainer = document.getElementById("scanner-container");
     const listaDiv = document.getElementById("lista");
+    const collectionInput = document.getElementById("collection-input");
+    const startBtn = document.getElementById("start-btn");
     const copyBtn = document.getElementById("copy-btn");
     const clearBtn = document.getElementById("clear-btn");
 
-    // --- Escuta em tempo real no Firestore ---
-    db.collection("codigos").orderBy("timestamp", "desc")
-      .onSnapshot(snapshot => {
-        // Limpa e repopula a lista na tela com os dados do Firestore
-        listaDiv.innerHTML = "";
-        scannedCodes.clear(); // Limpa o Set para sincronizar com o Firestore
-        snapshot.forEach(doc => {
-          const codigo = doc.data().codigo;
-          // Adiciona o código localmente, mas sem duplicar
-          if (!scannedCodes.has(codigo)) {
-            scannedCodes.add(codigo);
-            const item = document.createElement("div");
-            item.textContent = "📦 " + codigo;
-            item.classList.add("code-item");
-            listaDiv.prepend(item);
+    let collectionName = "codigos"; // Nome da coleção padrão
+    let unsubscribeFromFirestore = null; // Variável para a função de "desinscrição" do Firebase
+
+    const scannedCodes = new Set(); // Conjunto para códigos únicos
+
+    // --- Função para iniciar o scanner e o Firebase ---
+    function startApp() {
+      collectionName = collectionInput.value.trim() || "codigos";
+
+      // Esconde a área de configuração e mostra o scanner
+      document.getElementById("collection-setup").style.display = 'none';
+      scannerContainer.style.display = 'flex';
+      
+      // Limpa a lista anterior e o set de códigos
+      listaDiv.innerHTML = "";
+      scannedCodes.clear();
+
+      // Se já houver uma escuta ativa no Firebase, a desativa
+      if (unsubscribeFromFirestore) {
+        unsubscribeFromFirestore();
+      }
+
+      // Inicia a nova escuta na coleção escolhida
+      unsubscribeFromFirestore = db.collection(collectionName).orderBy("timestamp", "desc")
+        .onSnapshot(snapshot => {
+          listaDiv.innerHTML = "";
+          scannedCodes.clear();
+          snapshot.forEach(doc => {
+            const codigo = doc.data().codigo;
+            if (!scannedCodes.has(codigo)) {
+              scannedCodes.add(codigo);
+              const item = document.createElement("div");
+              item.textContent = "📦 " + codigo;
+              item.classList.add("code-item");
+              listaDiv.prepend(item);
+            }
+          });
+        }, err => {
+          console.error("Erro na escuta do Firestore:", err);
+          alert("Erro ao conectar à coleção. Verifique o nome.");
+        });
+
+      // Inicia o QuaggaJS
+      if (navigator.mediaDevices && typeof Quagga !== 'undefined') {
+        Quagga.init({
+          inputStream: {
+            type: "LiveStream",
+            constraints: { facingMode: "environment" },
+            target: document.querySelector('#scanner')
+          },
+          decoder: {
+            readers: ["code_128_reader", "ean_reader", "ean_8_reader", "code_39_reader"]
+          }
+        }, function(err) {
+          if (!err) {
+            Quagga.start();
+          } else {
+            console.error("Erro ao iniciar Quagga:", err);
+            alert("Não foi possível iniciar a câmera. Verifique as permissões.");
           }
         });
-      });
 
-    // --- Inicia a câmera ---
-    if (navigator.mediaDevices && typeof Quagga !== 'undefined') {
-      Quagga.init({
-        inputStream: {
-          type: "LiveStream",
-          constraints: { facingMode: "environment" },
-          target: document.querySelector('#scanner')
-        },
-        decoder: {
-          readers: ["code_128_reader", "ean_reader", "ean_8_reader", "code_39_reader"]
-        }
-      }, function(err) {
-        if (!err) {
-          Quagga.start();
-        } else {
-          console.error("Erro ao iniciar Quagga:", err);
-          alert("Não foi possível iniciar a câmera. Verifique as permissões.");
-        }
-      });
-
-      Quagga.onDetected((data) => {
-        const codigo = data.codeResult.code;
-        // Filtra para aceitar apenas códigos com 7 dígitos e que não foram escaneados
-        if (codigo.length === 7 && !scannedCodes.has(codigo)) {
-          // Adiciona o código ao Firestore, que irá disparar o onSnapshot e atualizar a lista
-          db.collection("codigos").add({
-            codigo: codigo,
-            timestamp: firebase.firestore.FieldValue.serverTimestamp()
-          });
-        }
-      });
-    } else {
-      listaDiv.textContent = "Seu navegador não suporta este recurso ou a biblioteca Quagga não foi carregada.";
+        // Evento de detecção de código
+        Quagga.onDetected((data) => {
+          const codigo = data.codeResult.code;
+          if (codigo.length === 7 && !scannedCodes.has(codigo)) {
+            // Adiciona o código ao Firestore
+            db.collection(collectionName).add({
+              codigo: codigo,
+              timestamp: firebase.firestore.FieldValue.serverTimestamp()
+            }).then(() => {
+              console.log("Código adicionado com sucesso!");
+            }).catch(error => {
+              console.error("Erro ao adicionar código: ", error);
+            });
+          }
+        });
+      }
     }
 
     // --- Funcionalidade dos botões ---
+    startBtn.addEventListener('click', startApp);
+
     copyBtn.addEventListener('click', () => {
       if (scannedCodes.size === 0) {
         alert("Nenhum código escaneado para copiar.");
@@ -187,9 +242,8 @@
     });
 
     clearBtn.addEventListener('click', () => {
-      // Limpa os dados do Firebase e localmente
-      if (confirm("Tem certeza que deseja limpar todos os códigos? Esta ação é irreversível e afetará todos os usuários.")) {
-        db.collection("codigos").get().then(querySnapshot => {
+      if (confirm(`Tem certeza que deseja limpar todos os códigos da coleção "${collectionName}"?`)) {
+        db.collection(collectionName).get().then(querySnapshot => {
           querySnapshot.forEach(doc => {
             doc.ref.delete();
           });
