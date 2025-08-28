@@ -2,33 +2,27 @@
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
-    <title>Scanner de Etiquetas de Dispositivos</title>
+    <title>Scanner de Device IDs</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
     <style>
         body { font-family: sans-serif; text-align: center; }
-        #scanner-container { width: 100%; max-width: 400px; margin: auto; position: relative; }
-        #scanner { width: 100%; height: 300px; }
-        #lista-dispositivos { margin-top: 20px; font-size: 16px; text-align: left; }
-        .dispositivo { border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; border-radius: 5px; }
-        .dispositivo p { margin: 5px 0; }
-        .dispositivo .label { font-weight: bold; }
+        #scanner { width: 100%; max-width: 400px; margin: auto; }
+        #lista { margin-top: 20px; font-size: 18px; text-align: left; }
         #acoes { margin-top: 20px; }
         button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; }
-        #status { margin-top: 10px; font-size: 14px; color: #555; }
+        .item-lista { padding: 5px; border-bottom: 1px solid #eee; }
     </style>
 </head>
 <body>
-    <div id="scanner-container">
-        <div id="scanner"></div>
-    </div>
-    <div id="status">Iniciando scanner...</div>
+    <h1>Scanner de Device IDs</h1>
+    <div id="scanner"></div>
     <div id="acoes">
         <button id="copiarBtn">Copiar Device IDs</button>
         <button id="apagarBtn">Apagar Tudo</button>
     </div>
-    <div id="lista-dispositivos"></div>
+    <div id="lista"></div>
 
     <script>
         // --- Firebase ---
@@ -43,136 +37,72 @@
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
 
-        // --- Variáveis de estado ---
-        let dispositivoEmLeitura = {};
-        const DELAY_ENTRE_LEITURAS = 500; // Milissegundos de delay para evitar leituras duplicadas
+        // Variável de controle para o delay
+        const DELAY_ENTRE_LEITURAS = 500; // 500 milissegundos
         let ultimoCodigoDetectado = '';
         let ultimoTimestampDetectado = 0;
-        let lendoNovoDispositivo = false;
 
-        // --- Funções Auxiliares ---
-        function setStatus(mensagem) {
-            document.getElementById("status").textContent = mensagem;
-        }
-
-        function isImei(codigo) { return codigo && codigo.length === 15; }
-        function isDeviceId(codigo) { return codigo && codigo.length === 7; }
-        function isProductId(codigo) { return codigo && codigo.length === 4; }
-        function isSrid(codigo) { return codigo && codigo.length === 5; }
-
-        function adicionarDispositivoNaTela(dispositivo) {
-            const listaDiv = document.getElementById("lista-dispositivos");
-            const divDispositivo = document.createElement("div");
-            divDispositivo.className = "dispositivo";
-            divDispositivo.innerHTML = `
-                <p><span class="label">IMEI:</span> ${dispositivo.imei}</p>
-                <p><span class="label">Device ID:</span> ${dispositivo.deviceid}</p>
-                <p><span class="label">Product ID:</span> ${dispositivo.productid}</p>
-                <p><span class="label">SR ID:</span> ${dispositivo.srid}</p>
-            `;
-            listaDiv.prepend(divDispositivo);
+        // --- Função para adicionar código na tela ---
+        function adicionarCodigo(codigo) {
+            const div = document.getElementById("lista");
+            const item = document.createElement("div");
+            item.className = "item-lista";
+            item.textContent = "📦 " + codigo;
+            div.prepend(item);
         }
 
         // --- Escuta em tempo real no Firestore ---
-        db.collection("dispositivos").orderBy("timestamp", "desc")
+        db.collection("deviceids").orderBy("timestamp", "desc")
             .onSnapshot(snapshot => {
-                const listaDiv = document.getElementById("lista-dispositivos");
-                listaDiv.innerHTML = "";
+                document.getElementById("lista").innerHTML = "";
                 snapshot.forEach(doc => {
-                    adicionarDispositivoNaTela(doc.data());
+                    adicionarCodigo(doc.data().codigo);
                 });
-            }, err => {
-                console.error("Erro ao carregar dados do Firestore: ", err);
-                setStatus("Erro ao carregar dados.");
             });
 
-        // --- Inicia a câmera ---
+        // --- Inicia câmera ---
         if (navigator.mediaDevices) {
             Quagga.init({
                 inputStream: {
                     type: "LiveStream",
-                    constraints: {
-                        facingMode: "environment",
-                        width: { min: 640, max: 1280 },
-                        height: { min: 480, max: 720 }
-                    },
+                    constraints: { facingMode: "environment" },
                     target: document.querySelector('#scanner')
                 },
-                decoder: {
-                    readers: ["code_128_reader", "ean_reader", "ean_8_reader", "code_39_reader"]
-                },
-                locator: {
-                    patchSize: "medium",
-                    halfSample: true
-                }
+                decoder: { readers: ["code_128_reader","ean_reader","ean_8_reader","code_39_reader"] }
             }, function(err) {
-                if (err) {
+                if (!err) {
+                    Quagga.start();
+                } else {
                     console.error("Erro ao iniciar o Quagga: ", err);
-                    setStatus("Erro: " + err.name + " - Verifique se a permissão da câmera foi concedida.");
-                    return;
+                    alert("Erro ao iniciar o scanner. Verifique se a permissão da câmera foi concedida.");
                 }
-                setStatus("Scanner pronto. Aponte para um código.");
-                Quagga.start();
             });
 
             Quagga.onDetected((data) => {
                 const codigo = data.codeResult.code;
                 const agora = Date.now();
 
-                // Ignora leituras duplicadas dentro do delay
-                if (codigo === ultimoCodigoDetectado && (agora - ultimoTimestampDetectado) < DELAY_ENTRE_LEITURAS) {
-                    return;
-                }
-                
-                ultimoCodigoDetectado = codigo;
-                ultimoTimestampDetectado = agora;
-                setStatus("Código detectado: " + codigo);
+                // Checa se o código tem 7 dígitos e se não foi lido recentemente
+                if (codigo.length === 7 && codigo !== ultimoCodigoDetectado) {
+                    // Atualiza o tempo e o código lido
+                    ultimoCodigoDetectado = codigo;
+                    ultimoTimestampDetectado = agora;
 
-                if (isImei(codigo)) {
-                    lendoNovoDispositivo = true;
-                    dispositivoEmLeitura = { imei: codigo };
-                    setStatus("IMEI detectado. Lendo próximo código...");
-                } else if (lendoNovoDispositivo) {
-                    if (isDeviceId(codigo) && !dispositivoEmLeitura.deviceid) {
-                        dispositivoEmLeitura.deviceid = codigo;
-                        setStatus("Device ID detectado. Lendo próximo código...");
-                    } else if (isProductId(codigo) && !dispositivoEmLeitura.productid) {
-                        dispositivoEmLeitura.productid = codigo;
-                        setStatus("Product ID detectado. Lendo próximo código...");
-                    } else if (isSrid(codigo) && !dispositivoEmLeitura.srid) {
-                        dispositivoEmLeitura.srid = codigo;
-                        setStatus("SR ID detectado. Salvando dispositivo...");
-                    }
-                }
-
-                // Checa se todos os 4 códigos foram lidos para salvar
-                if (dispositivoEmLeitura.imei && dispositivoEmLeitura.deviceid && dispositivoEmLeitura.productid && dispositivoEmLeitura.srid) {
-                    Quagga.stop(); // Para a câmera temporariamente para evitar leituras indesejadas
-                    db.collection("dispositivos").add({
-                        ...dispositivoEmLeitura,
+                    // Salva no Firestore
+                    db.collection("deviceids").add({
+                        codigo: codigo,
                         timestamp: firebase.firestore.FieldValue.serverTimestamp()
-                    }).then(() => {
-                        setStatus("Dispositivo salvo com sucesso! Iniciando scanner para próximo...");
-                        dispositivoEmLeitura = {};
-                        lendoNovoDispositivo = false;
-                        setTimeout(() => Quagga.start(), 1500); // Reinicia o scanner após 1.5s
-                    }).catch(err => {
-                        console.error("Erro ao salvar no Firestore: ", err);
-                        setStatus("Erro ao salvar dispositivo. Tente novamente.");
-                        Quagga.start(); // Reinicia em caso de erro
                     });
                 }
             });
-        } else {
-            setStatus("Acesso à câmera não suportado neste navegador.");
         }
 
         // --- Botões de Ação ---
         document.getElementById("copiarBtn").addEventListener("click", () => {
-            db.collection("dispositivos").get().then(snapshot => {
+            db.collection("deviceids").get().then(snapshot => {
                 const deviceIds = [];
                 snapshot.forEach(doc => {
-                    deviceIds.push(doc.data().deviceid);
+                    deviceIds.push(doc.data().codigo);
                 });
                 const textoParaCopiar = deviceIds.join("\n");
                 navigator.clipboard.writeText(textoParaCopiar).then(() => {
@@ -186,7 +116,7 @@
 
         document.getElementById("apagarBtn").addEventListener("click", () => {
             if (confirm("Tem certeza que deseja apagar todos os dados?")) {
-                db.collection("dispositivos").get().then(snapshot => {
+                db.collection("deviceids").get().then(snapshot => {
                     const batch = db.batch();
                     snapshot.docs.forEach(doc => {
                         batch.delete(doc.ref);
