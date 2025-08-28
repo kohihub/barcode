@@ -8,17 +8,22 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
     <style>
         body { font-family: sans-serif; text-align: center; }
-        #scanner { width: 100%; max-width: 400px; margin: auto; }
+        #scanner-container { width: 100%; max-width: 400px; margin: auto; position: relative; }
+        #scanner { width: 100%; height: 300px; }
         #lista-dispositivos { margin-top: 20px; font-size: 16px; text-align: left; }
         .dispositivo { border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; border-radius: 5px; }
         .dispositivo p { margin: 5px 0; }
         .dispositivo .label { font-weight: bold; }
         #acoes { margin-top: 20px; }
         button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; }
+        #status { margin-top: 10px; font-size: 14px; color: #555; }
     </style>
 </head>
 <body>
-    <div id="scanner"></div>
+    <div id="scanner-container">
+        <div id="scanner"></div>
+    </div>
+    <div id="status">Iniciando scanner...</div>
     <div id="acoes">
         <button id="copiarBtn">Copiar Device IDs</button>
         <button id="apagarBtn">Apagar Tudo</button>
@@ -46,11 +51,14 @@
         let lendoNovoDispositivo = false;
 
         // --- Funções Auxiliares ---
+        function setStatus(mensagem) {
+            document.getElementById("status").textContent = mensagem;
+        }
 
-        function isImei(codigo) { return codigo.length === 15; }
-        function isDeviceId(codigo) { return codigo.length === 7; }
-        function isProductId(codigo) { return codigo.length === 4; }
-        function isSrid(codigo) { return codigo.length === 5; }
+        function isImei(codigo) { return codigo && codigo.length === 15; }
+        function isDeviceId(codigo) { return codigo && codigo.length === 7; }
+        function isProductId(codigo) { return codigo && codigo.length === 4; }
+        function isSrid(codigo) { return codigo && codigo.length === 5; }
 
         function adicionarDispositivoNaTela(dispositivo) {
             const listaDiv = document.getElementById("lista-dispositivos");
@@ -69,10 +77,13 @@
         db.collection("dispositivos").orderBy("timestamp", "desc")
             .onSnapshot(snapshot => {
                 const listaDiv = document.getElementById("lista-dispositivos");
-                listaDiv.innerHTML = ""; // Limpa a lista para redesenhar
+                listaDiv.innerHTML = "";
                 snapshot.forEach(doc => {
                     adicionarDispositivoNaTela(doc.data());
                 });
+            }, err => {
+                console.error("Erro ao carregar dados do Firestore: ", err);
+                setStatus("Erro ao carregar dados.");
             });
 
         // --- Inicia a câmera ---
@@ -80,12 +91,28 @@
             Quagga.init({
                 inputStream: {
                     type: "LiveStream",
-                    constraints: { facingMode: "environment" },
+                    constraints: {
+                        facingMode: "environment",
+                        width: { min: 640, max: 1280 },
+                        height: { min: 480, max: 720 }
+                    },
                     target: document.querySelector('#scanner')
                 },
-                decoder: { readers: ["code_128_reader","ean_reader","ean_8_reader","code_39_reader"] }
+                decoder: {
+                    readers: ["code_128_reader", "ean_reader", "ean_8_reader", "code_39_reader"]
+                },
+                locator: {
+                    patchSize: "medium",
+                    halfSample: true
+                }
             }, function(err) {
-                if (!err) Quagga.start();
+                if (err) {
+                    console.error("Erro ao iniciar o Quagga: ", err);
+                    setStatus("Erro: " + err.name + " - Verifique se a permissão da câmera foi concedida.");
+                    return;
+                }
+                setStatus("Scanner pronto. Aponte para um código.");
+                Quagga.start();
             });
 
             Quagga.onDetected((data) => {
@@ -96,41 +123,48 @@
                 if (codigo === ultimoCodigoDetectado && (agora - ultimoTimestampDetectado) < DELAY_ENTRE_LEITURAS) {
                     return;
                 }
-
-                // Reseta a leitura se o código for diferente
-                if (codigo !== ultimoCodigoDetectado) {
-                    ultimoCodigoDetectado = codigo;
-                }
+                
+                ultimoCodigoDetectado = codigo;
                 ultimoTimestampDetectado = agora;
+                setStatus("Código detectado: " + codigo);
 
                 if (isImei(codigo)) {
-                    // Inicia a leitura de um novo dispositivo
                     lendoNovoDispositivo = true;
-                    dispositivoEmLeitura = {
-                        imei: codigo
-                    };
+                    dispositivoEmLeitura = { imei: codigo };
+                    setStatus("IMEI detectado. Lendo próximo código...");
                 } else if (lendoNovoDispositivo) {
                     if (isDeviceId(codigo) && !dispositivoEmLeitura.deviceid) {
                         dispositivoEmLeitura.deviceid = codigo;
+                        setStatus("Device ID detectado. Lendo próximo código...");
                     } else if (isProductId(codigo) && !dispositivoEmLeitura.productid) {
                         dispositivoEmLeitura.productid = codigo;
+                        setStatus("Product ID detectado. Lendo próximo código...");
                     } else if (isSrid(codigo) && !dispositivoEmLeitura.srid) {
                         dispositivoEmLeitura.srid = codigo;
+                        setStatus("SR ID detectado. Salvando dispositivo...");
                     }
                 }
 
                 // Checa se todos os 4 códigos foram lidos para salvar
                 if (dispositivoEmLeitura.imei && dispositivoEmLeitura.deviceid && dispositivoEmLeitura.productid && dispositivoEmLeitura.srid) {
+                    Quagga.stop(); // Para a câmera temporariamente para evitar leituras indesejadas
                     db.collection("dispositivos").add({
                         ...dispositivoEmLeitura,
                         timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                    }).then(() => {
+                        setStatus("Dispositivo salvo com sucesso! Iniciando scanner para próximo...");
+                        dispositivoEmLeitura = {};
+                        lendoNovoDispositivo = false;
+                        setTimeout(() => Quagga.start(), 1500); // Reinicia o scanner após 1.5s
+                    }).catch(err => {
+                        console.error("Erro ao salvar no Firestore: ", err);
+                        setStatus("Erro ao salvar dispositivo. Tente novamente.");
+                        Quagga.start(); // Reinicia em caso de erro
                     });
-                    
-                    // Reseta o estado para começar a ler o próximo dispositivo
-                    dispositivoEmLeitura = {};
-                    lendoNovoDispositivo = false;
                 }
             });
+        } else {
+            setStatus("Acesso à câmera não suportado neste navegador.");
         }
 
         // --- Botões de Ação ---
